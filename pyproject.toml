@@ -1,11 +1,12 @@
 [project]
-name = "ableton-mcp"
-version = "1.4.5"
-description = "Ableton Live integration through the Model Context Protocol"
+name = "ableton-mcp-21"
+version = "1.5.0"
+description = "Ableton Live MCP with mixer tools (colors, routing, volume, pan, mute) - 21 Academy fork of ahujasid/ableton-mcp"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    {name = "Siddharth Ahuja", email = "ahujasid@gmail.com"}
+    {name = "Siddharth Ahuja", email = "ahujasid@gmail.com"},
+    {name = "Franco (21 Academy)"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -35,5 +36,6 @@ exclude-package-data = { "MCP_Server" = ["config.py"] }
 "MCP_Server.bundled_ableton_remote_script" = ["AbletonMCP_init.py"]
 
 [project.urls]
-"Homepage" = "https://github.com/ahujasid/ableton-mcp"
-"Bug Tracker" = "https://github.com/ahujasid/ableton-mcp/issues"
+"Homepage" = "https://github.com/francocesti21/ableton-mcp-21"
+"Bug Tracker" = "https://github.com/francocesti21/ableton-mcp-21/issues"
+"Upstream" = "https://github.com/ahujasid/ableton-mcp"

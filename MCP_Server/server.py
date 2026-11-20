@@ -139,7 +139,10 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            "set_track_color", "set_track_volume", "set_track_pan",
+            "set_track_mute", "set_track_solo", "set_track_output_routing",
+            "configure_tracks",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -664,6 +667,229 @@ def create_audio_track(ctx: Context, index: int = -1, user_prompt: str = "") -> 
     except Exception as e:
         logger.error(f"Error creating audio track: {str(e)}")
         return f"Error creating audio track: {str(e)}"
+
+
+# ----------------------------------------------------------------------
+# 21 Academy additions: track colors, output routing, volume, pan, mute,
+# solo, a compact overview, and a batch tool so a whole session can be
+# organized in one call.
+# ----------------------------------------------------------------------
+
+def _send(command: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    ableton = get_ableton_connection()
+    return ableton.send_command(command, params)
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_tracks_overview")
+def get_tracks_overview(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Compact overview of every track, return track and the master: index, name,
+    color (#RRGGBB), whether it is a group, which group it belongs to, output
+    routing, volume (dB text), pan, mute and solo. Use this before organizing a
+    session; it is much cheaper than calling get_track_info per track.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return json.dumps(_send("get_tracks_overview", {}), ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error getting tracks overview: {str(e)}")
+        return f"Error getting tracks overview: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_color")
+@trajectory_tool("set_track_color")
+def set_track_color(ctx: Context, track_index: int, color: str,
+                    track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Set a track's color. Live snaps it to the nearest color of its palette.
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - color: '#RRGGBB' hex, or a name: red, orange, amber, yellow, lime, green,
+      teal, cyan, blue, indigo, purple, violet, magenta, pink, brown, gray,
+      white, black (Spanish names also work: rojo, azul, verde, morado...)
+    - track_type: 'track' (default), 'return' or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_color", {"track_index": track_index, "color": color,
+                                      "track_type": track_type})
+        return f"Colored '{r.get('name')}' {r.get('color')}"
+    except Exception as e:
+        logger.error(f"Error setting track color: {str(e)}")
+        return f"Error setting track color: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_volume")
+@trajectory_tool("set_track_volume")
+def set_track_volume(ctx: Context, track_index: int, volume_db: float = None,
+                     volume: float = None, track_type: str = "track",
+                     user_prompt: str = "") -> str:
+    """
+    Set a track's fader. Prefer volume_db (e.g. -6.0); volume is the raw
+    normalized fader value 0.0-1.0 (0.85 is 0 dB in Live).
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - volume_db: Target level in dB (-inf to +6)
+    - volume: Raw normalized fader value, used only if volume_db is not given
+    - track_type: 'track' (default), 'return' or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_volume", {"track_index": track_index, "volume_db": volume_db,
+                                       "volume": volume, "track_type": track_type})
+        return f"Set '{r.get('name')}' volume to {r.get('volume')}"
+    except Exception as e:
+        logger.error(f"Error setting track volume: {str(e)}")
+        return f"Error setting track volume: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_pan")
+@trajectory_tool("set_track_pan")
+def set_track_pan(ctx: Context, track_index: int, pan: float,
+                  track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Set a track's pan: -1.0 hard left, 0.0 center, 1.0 hard right.
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - pan: -1.0 to 1.0
+    - track_type: 'track' (default), 'return' or 'master'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_pan", {"track_index": track_index, "pan": pan,
+                                    "track_type": track_type})
+        return f"Set '{r.get('name')}' pan to {r.get('pan')}"
+    except Exception as e:
+        logger.error(f"Error setting track pan: {str(e)}")
+        return f"Error setting track pan: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_mute")
+@trajectory_tool("set_track_mute")
+def set_track_mute(ctx: Context, track_index: int, mute: bool = True,
+                   track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Mute (True) or unmute (False) a track.
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - mute: True to mute, False to unmute
+    - track_type: 'track' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_mute", {"track_index": track_index, "mute": mute,
+                                     "track_type": track_type})
+        return f"'{r.get('name')}' mute = {r.get('mute')}"
+    except Exception as e:
+        logger.error(f"Error setting track mute: {str(e)}")
+        return f"Error setting track mute: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_solo")
+@trajectory_tool("set_track_solo")
+def set_track_solo(ctx: Context, track_index: int, solo: bool = True,
+                   track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Solo (True) or unsolo (False) a track.
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - solo: True to solo, False to unsolo
+    - track_type: 'track' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_solo", {"track_index": track_index, "solo": solo,
+                                     "track_type": track_type})
+        return f"'{r.get('name')}' solo = {r.get('solo')}"
+    except Exception as e:
+        logger.error(f"Error setting track solo: {str(e)}")
+        return f"Error setting track solo: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("get_track_output_routing")
+def get_track_output_routing(ctx: Context, track_index: int, track_type: str = "track",
+                             user_prompt: str = "") -> str:
+    """
+    Show where a track's audio goes and every destination it can be routed to
+    (e.g. 'Main', 'Group', other track names, 'Sends Only').
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - track_type: 'track' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return json.dumps(_send("get_track_output_routing",
+                                {"track_index": track_index, "track_type": track_type}),
+                          ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error getting output routing: {str(e)}")
+        return f"Error getting output routing: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_track_output_routing")
+@trajectory_tool("set_track_output_routing")
+def set_track_output_routing(ctx: Context, track_index: int, routing: str,
+                             track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Route a track's output to another destination by its display name, e.g.
+    'Main', a bus track's name, or 'Group'. Exact match first, then a unique
+    partial match. On failure the error lists the valid options.
+
+    Parameters:
+    - track_index: Index of the track (within its track_type list)
+    - routing: Destination name as shown in Live's Audio To menu
+    - track_type: 'track' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("set_track_output_routing", {"track_index": track_index,
+                                               "routing": routing,
+                                               "track_type": track_type})
+        return f"Routed '{r.get('name')}' to {r.get('output')}"
+    except Exception as e:
+        logger.error(f"Error setting output routing: {str(e)}")
+        return f"Error setting output routing: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("configure_tracks")
+@trajectory_tool("configure_tracks")
+def configure_tracks(ctx: Context, changes: List[Dict[str, Any]], user_prompt: str = "") -> str:
+    """
+    Apply many track changes in ONE call (much faster and cheaper than one call
+    per setting). Each item is a dict with track_index and any of:
+    track_type ('track'|'return'|'master'), name, color, volume_db, volume,
+    pan, mute, solo, output (routing destination name).
+    Example: [{"track_index": 0, "name": "Kick", "color": "red",
+               "output": "DRUMS BUS", "volume_db": -6}]
+    Items are applied in order; a failing item does not stop the rest.
+
+    Parameters:
+    - changes: List of per-track change dicts
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        r = _send("configure_tracks", {"changes": changes})
+        return json.dumps(r, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error configuring tracks: {str(e)}")
+        return f"Error configuring tracks: {str(e)}"
 
 
 @mcp.tool()

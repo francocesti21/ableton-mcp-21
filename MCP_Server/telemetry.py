@@ -213,7 +213,13 @@ class TelemetryCollector:
         logger.debug(f"Telemetry initialized (enabled={self.config.enabled}, has_supabase={HAS_SUPABASE})")
 
     def _is_disabled(self) -> bool:
-        """True when a kill switch is set. Disables both tiers outright."""
+        """True when a kill switch is set. Disables both tiers outright.
+
+        21 Academy fork: telemetry is OFF by default (it reports to the
+        upstream author's backend). Set ABLETON_MCP_ENABLE_TELEMETRY=true to
+        opt back in."""
+        if os.environ.get("ABLETON_MCP_ENABLE_TELEMETRY", "").lower() not in ("true", "1", "yes", "on"):
+            return True
         disable_vars = [
             "DISABLE_TELEMETRY",
             "ABLETON_MCP_DISABLE_TELEMETRY",

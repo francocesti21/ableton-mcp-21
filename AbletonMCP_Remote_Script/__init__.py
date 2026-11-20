@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,15 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "get_tracks_overview",
+    "get_track_output_routing",
+    "set_track_color",
+    "set_track_volume",
+    "set_track_pan",
+    "set_track_mute",
+    "set_track_solo",
+    "set_track_output_routing",
+    "configure_tracks",
 ]
 
 def create_instance(c_instance):
@@ -287,6 +296,11 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
                 response["result"] = self._get_track_info(track_index)
+            elif command_type == "get_tracks_overview":
+                response["result"] = self._get_tracks_overview()
+            elif command_type == "get_track_output_routing":
+                response["result"] = self._get_track_output_routing(
+                    params.get("track_index"), params.get("track_type", "track"))
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
@@ -300,7 +314,8 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator"]:
+                                 "create_locator",
+                                 "set_track_color", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo", "set_track_output_routing", "configure_tracks"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -400,6 +415,33 @@ class AbletonMCP(ControlSurface):
                             name = params.get("name", "")
                             time_val = params.get("time", 0.0)
                             result = self._create_locator(name, time_val)
+
+                        elif command_type == "set_track_color":
+                            result = self._set_track_color(
+                                params.get("track_index"), params.get("color"),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_track_volume":
+                            result = self._set_track_volume(
+                                params.get("track_index"), params.get("volume_db"),
+                                params.get("volume"), params.get("track_type", "track"))
+                        elif command_type == "set_track_pan":
+                            result = self._set_track_pan(
+                                params.get("track_index"), params.get("pan", 0.0),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_track_mute":
+                            result = self._set_track_mute(
+                                params.get("track_index"), params.get("mute", True),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_track_solo":
+                            result = self._set_track_solo(
+                                params.get("track_index"), params.get("solo", True),
+                                params.get("track_type", "track"))
+                        elif command_type == "set_track_output_routing":
+                            result = self._set_track_output_routing(
+                                params.get("track_index"), params.get("routing", ""),
+                                params.get("track_type", "track"))
+                        elif command_type == "configure_tracks":
+                            result = self._configure_tracks(params.get("changes", []))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -675,6 +717,230 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating audio track: " + str(e))
             raise
 
+
+    # ------------------------------------------------------------------
+    # 21 Academy additions: colors, routing, volume, pan, mute, solo
+    # ------------------------------------------------------------------
+    def _resolve_track(self, track_index, track_type="track"):
+        """Return a Live track by kind: 'track' (default), 'return' or 'master'."""
+        kind = (track_type or "track").lower()
+        if kind == "master":
+            return self._song.master_track
+        tracks = self._song.return_tracks if kind == "return" else self._song.tracks
+        if track_index is None or track_index < 0 or track_index >= len(tracks):
+            raise IndexError("%s index out of range: %s" % (kind, track_index))
+        return tracks[track_index]
+
+    _NAMED_COLORS = {
+        "red": 0xE53935, "orange": 0xFB8C00, "amber": 0xFFB300,
+        "yellow": 0xFDD835, "lime": 0xC0CA33, "green": 0x43A047,
+        "teal": 0x009688, "cyan": 0x00ACC1, "blue": 0x1E88E5,
+        "indigo": 0x3949AB, "purple": 0x8E24AA, "violet": 0x7E57C2,
+        "magenta": 0xD81B60, "pink": 0xEC407A, "brown": 0x6D4C41,
+        "gray": 0x9E9E9E, "grey": 0x9E9E9E, "white": 0xFFFFFF,
+        "black": 0x212121,
+        "rojo": 0xE53935, "naranja": 0xFB8C00, "amarillo": 0xFDD835,
+        "verde": 0x43A047, "turquesa": 0x009688, "celeste": 0x00ACC1,
+        "azul": 0x1E88E5, "morado": 0x8E24AA, "violeta": 0x7E57C2,
+        "rosa": 0xEC407A, "marron": 0x6D4C41, "gris": 0x9E9E9E,
+        "blanco": 0xFFFFFF, "negro": 0x212121,
+    }
+
+    def _parse_color(self, color):
+        """Accept '#RRGGBB', 'RRGGBB', a color name, or an int; return int RGB."""
+        if isinstance(color, int):
+            return color & 0xFFFFFF
+        text = str(color).strip().lower()
+        if text in self._NAMED_COLORS:
+            return self._NAMED_COLORS[text]
+        if text.startswith("#"):
+            text = text[1:]
+        if len(text) == 6:
+            return int(text, 16)
+        raise ValueError("Unrecognized color: %s" % color)
+
+    def _volume_db_text(self, param, value=None):
+        try:
+            v = param.value if value is None else value
+            return param.str_for_value(v)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_db(text):
+        if text is None:
+            return None
+        t = str(text).strip().lower().replace("db", "").strip()
+        if "inf" in t:
+            return float("-inf")
+        try:
+            return float(t)
+        except ValueError:
+            return None
+
+    def _set_volume_db(self, param, target_db):
+        """Find the normalized fader value whose display matches target_db (bisection)."""
+        target_db = float(target_db)
+        lo, hi = param.min, param.max
+        if self._parse_db(self._volume_db_text(param, hi)) is not None and \
+                target_db >= self._parse_db(self._volume_db_text(param, hi)):
+            param.value = hi
+            return
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            db = self._parse_db(self._volume_db_text(param, mid))
+            if db is None:
+                break
+            if db < target_db:
+                lo = mid
+            else:
+                hi = mid
+        param.value = (lo + hi) / 2.0
+
+    def _routing_info(self, track):
+        info = {"current": None, "available": []}
+        try:
+            info["current"] = track.output_routing_type.display_name
+        except Exception:
+            pass
+        try:
+            info["available"] = [rt.display_name for rt in track.available_output_routing_types]
+        except Exception:
+            pass
+        return info
+
+    def _get_tracks_overview(self):
+        """Compact overview of every track: name, color, group, routing, mixer."""
+        def describe(track, index, kind):
+            entry = {"index": index, "type": kind, "name": track.name}
+            try:
+                entry["color"] = "#%06X" % (track.color & 0xFFFFFF)
+            except Exception:
+                pass
+            try:
+                entry["is_group"] = bool(track.is_foldable)
+            except Exception:
+                entry["is_group"] = False
+            try:
+                entry["group"] = track.group_track.name if track.is_grouped else None
+            except Exception:
+                entry["group"] = None
+            if kind != "master":
+                entry["output"] = self._routing_info(track)["current"]
+                try:
+                    entry["mute"] = track.mute
+                    entry["solo"] = track.solo
+                except Exception:
+                    pass
+            entry["volume"] = self._volume_db_text(track.mixer_device.volume)
+            try:
+                entry["pan"] = round(track.mixer_device.panning.value, 3)
+            except Exception:
+                pass
+            return entry
+
+        result = {"tracks": [], "returns": [], "master": None}
+        for i, t in enumerate(self._song.tracks):
+            result["tracks"].append(describe(t, i, "track"))
+        for i, t in enumerate(self._song.return_tracks):
+            result["returns"].append(describe(t, i, "return"))
+        result["master"] = describe(self._song.master_track, 0, "master")
+        return result
+
+    def _get_track_output_routing(self, track_index, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        info = self._routing_info(track)
+        info["name"] = track.name
+        return info
+
+    def _set_track_output_routing(self, track_index, routing, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        wanted = str(routing).strip().lower()
+        options = list(track.available_output_routing_types)
+        match = None
+        for rt in options:
+            if rt.display_name.strip().lower() == wanted:
+                match = rt
+                break
+        if match is None:
+            partial = [rt for rt in options if wanted in rt.display_name.strip().lower()]
+            if len(partial) == 1:
+                match = partial[0]
+            elif len(partial) > 1:
+                raise ValueError("Routing '%s' is ambiguous: %s" % (
+                    routing, [rt.display_name for rt in partial]))
+        if match is None:
+            raise ValueError("Routing '%s' not available. Options: %s" % (
+                routing, [rt.display_name for rt in options]))
+        track.output_routing_type = match
+        return {"name": track.name, "output": track.output_routing_type.display_name}
+
+    def _set_track_color(self, track_index, color, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        track.color = self._parse_color(color)
+        return {"name": track.name, "color": "#%06X" % (track.color & 0xFFFFFF)}
+
+    def _set_track_volume(self, track_index, volume_db=None, volume=None, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        param = track.mixer_device.volume
+        if volume_db is not None:
+            self._set_volume_db(param, volume_db)
+        elif volume is not None:
+            param.value = max(param.min, min(param.max, float(volume)))
+        else:
+            raise ValueError("Provide volume_db or volume")
+        return {"name": track.name, "volume": self._volume_db_text(param),
+                "value": param.value}
+
+    def _set_track_pan(self, track_index, pan, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        param = track.mixer_device.panning
+        param.value = max(param.min, min(param.max, float(pan)))
+        return {"name": track.name, "pan": round(param.value, 3)}
+
+    def _set_track_mute(self, track_index, mute, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        track.mute = bool(mute)
+        return {"name": track.name, "mute": track.mute}
+
+    def _set_track_solo(self, track_index, solo, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        track.solo = bool(solo)
+        return {"name": track.name, "solo": track.solo}
+
+    def _configure_tracks(self, changes):
+        """Apply many track changes in one call. Each item may set:
+        track_index, track_type, name, color, volume_db, volume, pan, mute, solo, output."""
+        results = []
+        for item in changes or []:
+            idx = item.get("track_index")
+            kind = item.get("track_type", "track")
+            entry = {"track_index": idx, "track_type": kind, "ok": True, "applied": {}}
+            try:
+                track = self._resolve_track(idx, kind)
+                if "name" in item and item["name"] is not None:
+                    track.name = item["name"]
+                    entry["applied"]["name"] = track.name
+                if item.get("color") is not None:
+                    entry["applied"].update(self._set_track_color(idx, item["color"], kind))
+                if item.get("volume_db") is not None or item.get("volume") is not None:
+                    entry["applied"].update(self._set_track_volume(
+                        idx, item.get("volume_db"), item.get("volume"), kind))
+                if item.get("pan") is not None:
+                    entry["applied"].update(self._set_track_pan(idx, item["pan"], kind))
+                if item.get("mute") is not None:
+                    entry["applied"].update(self._set_track_mute(idx, item["mute"], kind))
+                if item.get("solo") is not None:
+                    entry["applied"].update(self._set_track_solo(idx, item["solo"], kind))
+                if item.get("output"):
+                    entry["applied"].update(self._set_track_output_routing(idx, item["output"], kind))
+            except Exception as e:
+                entry["ok"] = False
+                entry["error"] = str(e)
+            results.append(entry)
+        return {"results": results,
+                "ok_count": sum(1 for r in results if r["ok"]),
+                "error_count": sum(1 for r in results if not r["ok"])}
 
     def _set_track_name(self, track_index, name):
         """Set the name of a track"""
