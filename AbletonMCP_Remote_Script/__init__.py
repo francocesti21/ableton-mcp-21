@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.8.1"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -795,7 +795,19 @@ class AbletonMCP(ControlSurface):
                 lo = mid
             else:
                 hi = mid
-        param.value = (lo + hi) / 2.0
+        best = (lo + hi) / 2.0
+        # Live displays fader values with limited precision; prefer a nearby
+        # rounded value (e.g. exactly 0.85 for 0 dB) when it is at least as
+        # close to the target.
+        def err(v):
+            d = self._parse_db(self._volume_db_text(param, v))
+            return abs(d - target_db) if d is not None and d != float("-inf") else float("inf")
+        for digits in (2, 3, 4):
+            cand = round(best, digits)
+            if param.min <= cand <= param.max and err(cand) <= err(best):
+                best = cand
+                break
+        param.value = best
 
     def _routing_info(self, track):
         info = {"current": None, "available": []}

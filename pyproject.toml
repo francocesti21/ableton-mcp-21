@@ -1,6 +1,6 @@
 [project]
 name = "ableton-mcp-21"
-version = "1.5.0"
+version = "1.5.1"
 description = "Ableton Live MCP with mixer tools (colors, routing, volume, pan, mute) - 21 Academy fork of ahujasid/ableton-mcp"
 readme = "README.md"
 requires-python = ">=3.10"
