@@ -149,3 +149,19 @@ def test_capabilities_and_version_advertised():
         assert cap in module.SCRIPT_CAPABILITIES
     from MCP_Server.remote_script_install import EXPECTED_REMOTE_SCRIPT_VERSION
     assert module.SCRIPT_VERSION == EXPECTED_REMOTE_SCRIPT_VERSION
+
+
+def test_create_delete_and_monitor(script):
+    song = script._song
+    song.create_audio_track = lambda i: song.tracks.append(FakeTrack("new"))
+    song.create_midi_track = lambda i: song.tracks.append(FakeTrack("midi"))
+    song.delete_track = lambda i: song.tracks.pop(i)
+    r = script._create_tracks(4, "audio")
+    assert r == {"created": 4, "kind": "audio", "first_index": 3, "last_index": 6}
+    script._delete_tracks([3, 5], "track")
+    assert len(song.tracks) == 5
+    song.tracks[0].current_monitoring_state = 1
+    out = script._configure_tracks([{"track_index": 0, "monitor": "in"}])
+    assert song.tracks[0].current_monitoring_state == 0
+    with pytest.raises(ValueError):
+        script._set_track_monitoring(0, "loud")

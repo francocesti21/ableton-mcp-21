@@ -143,6 +143,8 @@ class AbletonConnection:
             "set_track_color", "set_track_volume", "set_track_pan",
             "set_track_mute", "set_track_solo", "set_track_output_routing",
             "configure_tracks",
+            "create_tracks",
+            "delete_tracks",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -875,7 +877,9 @@ def configure_tracks(ctx: Context, changes: List[Dict[str, Any]], user_prompt: s
     Apply many track changes in ONE call (much faster and cheaper than one call
     per setting). Each item is a dict with track_index and any of:
     track_type ('track'|'return'|'master'), name, color, volume_db, volume,
-    pan, mute, solo, output (routing destination name).
+    pan, mute, solo, output (routing destination name), monitor ('in'|'auto'|'off').
+    A track used as a BUS (other tracks' output routed to it) needs monitor 'in'
+    or it passes no sound.
     Example: [{"track_index": 0, "name": "Kick", "color": "red",
                "output": "DRUMS BUS", "volume_db": -6}]
     Items are applied in order; a failing item does not stop the rest.
@@ -890,6 +894,44 @@ def configure_tracks(ctx: Context, changes: List[Dict[str, Any]], user_prompt: s
     except Exception as e:
         logger.error(f"Error configuring tracks: {str(e)}")
         return f"Error configuring tracks: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("create_tracks")
+@trajectory_tool("create_tracks")
+def create_tracks(ctx: Context, count: int, kind: str = "audio", user_prompt: str = "") -> str:
+    """
+    Create several tracks at the end of the session in ONE call.
+
+    Parameters:
+    - count: How many tracks (1-128)
+    - kind: 'audio' (default) or 'midi'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return json.dumps(_send("create_tracks", {"count": count, "kind": kind}), ensure_ascii=False)
+    except Exception as e:
+        return f"Error creating tracks: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("delete_tracks")
+@trajectory_tool("delete_tracks")
+def delete_tracks(ctx: Context, track_indices: List[int], track_type: str = "track", user_prompt: str = "") -> str:
+    """
+    Delete tracks (or return tracks with track_type='return'). Ask the user
+    before deleting anything they did not ask to delete.
+
+    Parameters:
+    - track_indices: Indices of the tracks to delete
+    - track_type: 'track' (default) or 'return'
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return json.dumps(_send("delete_tracks", {"track_indices": track_indices,
+                                                  "track_type": track_type}), ensure_ascii=False)
+    except Exception as e:
+        return f"Error deleting tracks: {str(e)}"
 
 
 @mcp.tool()
@@ -1115,12 +1157,13 @@ def set_tempo(ctx: Context, tempo: float, user_prompt: str = "") -> str:
 @mcp.tool()
 @rich_telemetry_tool("load_instrument_or_effect")
 @trajectory_tool("load_instrument_or_effect")
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_prompt: str = "") -> str:
+def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track", user_prompt: str = "") -> str:
     """
-    Load an instrument or effect onto a track using its URI.
+    Load an instrument, effect, preset (.adg) or plugin onto a track using its URI.
 
     Parameters:
-    - track_index: The index of the track to load the instrument on
+    - track_index: The index of the track to load the instrument on (ignored for the master)
+    - track_type: 'track' (default), 'return', or 'master' (the Main track)
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116')
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -1128,7 +1171,8 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
         ableton = get_ableton_connection()
         result = ableton.send_command("load_browser_item", {
             "track_index": track_index,
-            "item_uri": uri
+            "item_uri": uri,
+            "track_type": track_type,
         })
         
         # Check if the instrument was loaded successfully

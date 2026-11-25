@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.1"
+SCRIPT_VERSION = "1.9.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -66,6 +66,10 @@ SCRIPT_CAPABILITIES = [
     "set_track_solo",
     "set_track_output_routing",
     "configure_tracks",
+    "create_tracks",
+    "delete_tracks",
+    "set_track_monitoring",
+    "load_on_master",
 ]
 
 def create_instance(c_instance):
@@ -315,7 +319,8 @@ class AbletonMCP(ControlSurface):
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
                                  "create_locator",
-                                 "set_track_color", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo", "set_track_output_routing", "configure_tracks"]:
+                                 "set_track_color", "set_track_volume", "set_track_pan", "set_track_mute", "set_track_solo", "set_track_output_routing", "configure_tracks",
+                                 "create_tracks", "delete_tracks"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -384,11 +389,13 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
+                            result = self._load_instrument_or_effect(
+                                track_index, uri, params.get("track_type", "track"))
                         elif command_type == "load_browser_item":
                             track_index = params.get("track_index", 0)
                             item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
+                            result = self._load_browser_item(
+                                track_index, item_uri, params.get("track_type", "track"))
                         # ── Arrangement view commands ──────────────────────────────
                         elif command_type == "switch_to_arrangement_view":
                             result = self._switch_to_arrangement_view()
@@ -442,6 +449,12 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_type", "track"))
                         elif command_type == "configure_tracks":
                             result = self._configure_tracks(params.get("changes", []))
+                        elif command_type == "create_tracks":
+                            result = self._create_tracks(params.get("count", 1),
+                                                         params.get("kind", "audio"))
+                        elif command_type == "delete_tracks":
+                            result = self._delete_tracks(params.get("track_indices", []),
+                                                         params.get("track_type", "track"))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -718,6 +731,39 @@ class AbletonMCP(ControlSurface):
             raise
 
 
+    def _create_tracks(self, count, kind="audio"):
+        """Create `count` tracks at the end in ONE call ('audio' or 'midi')."""
+        count = max(1, min(128, int(count)))
+        make = self._song.create_midi_track if kind == "midi" else self._song.create_audio_track
+        start = len(self._song.tracks)
+        for _ in range(count):
+            make(-1)
+        return {"created": count, "kind": kind, "first_index": start,
+                "last_index": len(self._song.tracks) - 1}
+
+    def _delete_tracks(self, track_indices, track_type="track"):
+        """Delete tracks (or return tracks). Highest index first so the others
+        keep their positions."""
+        kind = (track_type or "track").lower()
+        deleted = []
+        for idx in sorted(set(int(i) for i in track_indices), reverse=True):
+            if kind == "return":
+                self._song.delete_return_track(idx)
+            else:
+                self._song.delete_track(idx)
+            deleted.append(idx)
+        return {"deleted": sorted(deleted), "track_type": kind}
+
+    _MONITOR = {"in": 0, "auto": 1, "off": 2}
+
+    def _set_track_monitoring(self, track_index, state, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        key = str(state).lower()
+        if key not in self._MONITOR:
+            raise ValueError("monitor must be in / auto / off")
+        track.current_monitoring_state = self._MONITOR[key]
+        return {"monitor": key}
+
     # ------------------------------------------------------------------
     # 21 Academy additions: colors, routing, volume, pan, mute, solo
     # ------------------------------------------------------------------
@@ -946,6 +992,8 @@ class AbletonMCP(ControlSurface):
                     entry["applied"].update(self._set_track_solo(idx, item["solo"], kind))
                 if item.get("output"):
                     entry["applied"].update(self._set_track_output_routing(idx, item["output"], kind))
+                if item.get("monitor"):
+                    entry["applied"].update(self._set_track_monitoring(idx, item["monitor"], kind))
             except Exception as e:
                 entry["ok"] = False
                 entry["error"] = str(e)
@@ -1556,7 +1604,7 @@ class AbletonMCP(ControlSurface):
     
     
     
-    def _load_instrument_or_effect(self, track_index, uri):
+    def _load_instrument_or_effect(self, track_index, uri, track_type="track"):
         """Load an instrument or effect onto a track by its browser URI.
 
         The command dispatcher above calls this method, but it was never
@@ -1566,15 +1614,12 @@ class AbletonMCP(ControlSurface):
         _load_browser_item does, so delegate to it; the only difference is the
         parameter name the MCP server uses ("uri" vs "item_uri").
         """
-        return self._load_browser_item(track_index, uri)
+        return self._load_browser_item(track_index, uri, track_type)
 
-    def _load_browser_item(self, track_index, item_uri):
-        """Load a browser item onto a track by its URI"""
+    def _load_browser_item(self, track_index, item_uri, track_type="track"):
+        """Load a browser item onto a track (or the return/master) by its URI"""
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            
-            track = self._song.tracks[track_index]
+            track = self._resolve_track(track_index, track_type)
             
             # Access the application's browser instance instead of creating a new one
             app = self.application()
